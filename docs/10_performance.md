@@ -1,7 +1,7 @@
 # DPC 学習基盤 パフォーマンス設計（物理最適化）
 
 ## 目的
-代表的な分析クエリに対する Redshift 物理設計の根拠と最適化手法を定義し、DIST/SORT 設定やマテリアライズドビュー (MV)、CTAS 活用方針を明確にする。
+代表的な分析クエリに対する Redshift Serverless 上での物理設計の根拠と最適化手法を定義し、DIST/SORT 設定やマテリアライズドビュー (MV)、CTAS 活用方針を明確にする。サーバーレスでもディストリビューション/ソート設計は有効であり、RPU 消費を抑えるための最適化を整理する。
 
 ## テーブル別 DIST/SORT 根拠
 | テーブル | DIST 設定 | SORT 設定 | 根拠 |
@@ -103,8 +103,9 @@ ORDER BY facility_cd, year_month;
 
 ## その他最適化
 - Spectrum 利用: 過去 5 年以上のデータを Parquet 化し S3 に配置、Redshift Spectrum 外部テーブルで参照。`UNLOAD` + `CREATE EXTERNAL TABLE` を活用。
-- `result_cache`: 繰返し同一クエリを実行する QuickSight には Result Cache を有効化。
-- `statement_timeout`: `adhoc` キューで 30 分を設定し過負荷クエリを防止。
+- `result_cache`: 繰返し同一クエリを実行する QuickSight には Result Cache を有効化し、RPU 消費を抑制。
+- `statement_timeout`: ワークグループのパラメータで 30 分を設定し、過負荷クエリを防止。
+- `serverless_pause`: 学習期間以外はワークグループを手動停止し、不要な RPU 課金を避ける。
 
 ## 決定事項 / 未決事項
 - **決定事項**

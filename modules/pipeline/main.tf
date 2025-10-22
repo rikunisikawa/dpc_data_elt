@@ -93,24 +93,6 @@ resource "aws_sns_topic" "pipeline" {
   tags = var.tags
 }
 
-resource "aws_lambda_permission" "allow_sns_notify" {
-  statement_id  = "AllowExecutionFromSnsNotify"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.pipeline["notify"].function_name
-  principal     = "sns.amazonaws.com"
-  source_arn    = aws_sns_topic.pipeline.arn
-}
-
-resource "aws_sns_topic_subscription" "notify" {
-  topic_arn = aws_sns_topic.pipeline.arn
-  protocol  = "lambda"
-  endpoint  = aws_lambda_function.pipeline["notify"].arn
-
-  raw_message_delivery = var.sns_subscription_raw_message_delivery
-
-  depends_on = [aws_lambda_permission.allow_sns_notify]
-}
-
 resource "aws_ecr_repository" "dbt" {
   name                 = var.dbt_repository_name
   force_delete         = var.dbt_repository_force_delete

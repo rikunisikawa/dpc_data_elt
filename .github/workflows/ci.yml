@@ -1,0 +1,60 @@
+name: IaC and dbt checks
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+
+jobs:
+  terraform:
+    name: Terraform validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.6
+
+      - name: Terraform fmt
+        run: terraform -chdir=infra/terraform/dev fmt -check
+
+      - name: Terraform validate
+        run: terraform -chdir=infra/terraform/dev validate
+
+      - name: Terraform plan
+        if: ${{ secrets.AWS_ACCESS_KEY_ID != '' && secrets.AWS_SECRET_ACCESS_KEY != '' }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: terraform -chdir=infra/terraform/dev plan -input=false
+
+  dbt:
+    name: dbt compilation
+    runs-on: ubuntu-latest
+    if: ${{ hashFiles('dbt_project.yml') != '' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dbt dependencies
+        run: pip install dbt-redshift==1.7.8
+
+      - name: dbt deps
+        run: dbt deps
+
+      - name: dbt compile
+        run: dbt compile

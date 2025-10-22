@@ -1,0 +1,18 @@
+version: 2
+models:
+  - name: dim_facility
+    description: "施設マスタディメンション"
+    tags: ['layer:ref', 'domain:shared']
+    meta:
+      owner: data-eng
+      refresh_frequency: weekly
+    columns:
+      - name: facility_cd
+        description: "施設コード"
+        tests:
+          - not_null
+          - unique
+      - name: facility_name
+        description: "施設名称"
+        tests:
+          - not_null

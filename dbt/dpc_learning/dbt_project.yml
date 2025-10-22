@@ -1,0 +1,32 @@
+name: dpc_learning
+version: 0.1.0
+config-version: 2
+profile: dpc_learning
+model-paths:
+  - models
+seed-paths:
+  - seeds
+macro-paths:
+  - macros
+target-path: /tmp/dbt/target
+clean-targets:
+  - target
+  - dbt_packages
+models:
+  dpc_learning:
+    +materialized: table
+    raw:
+      +schema: raw
+      +materialized: view
+    stage:
+      +schema: stage
+      +materialized: incremental
+    mart:
+      +schema: mart
+      +materialized: table
+    ref:
+      +schema: ref
+      +materialized: table
+seeds:
+  dpc_learning:
+    +schema: ref

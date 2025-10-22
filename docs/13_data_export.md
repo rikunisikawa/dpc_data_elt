@@ -176,3 +176,36 @@ def write_metadata(prefix: str, yyyymm: str, env: str):
   - CSV 出力が必要な場合の文字コード（UTF-8 vs Shift_JIS）の選定が未確定。
   - 施設コードの匿名化要否（ハッシュ化するか）について利用部門と合意が必要。
   - バージョンタグと Git 管理の連携ルール（タグ命名規則など）の最終決定が未定。
+
+## 学習環境向けミニマム実装ガイド
+
+docs/07_elt_pipeline.md で定義した Step Functions から呼び出される `export_parquet` Lambda をベースに、学習環境で必要最小限のデー
+タエクスポートと可視化準備を行う際の具体的な手順をまとめる。
+
+### Parquet エクスポートの運用
+
+- **出力タイミング**: ELT パイプラインの最終ステップで `dbt test` 成功後に実行する。リトライ上限に達した場合は Step Functions から失敗通知を送り、S3 の不完全な出力は運用 Runbook に従って削除する。
+- **入力パラメータ**: Lambda のイベントには `yyyymm`（対象年月）、`env`（`dev`/`stg`/`prod` など）を渡す。Step Functions ではインプットの `yyyymm` をそのまま Lambda に引き継ぎ、デフォルトで最新バッチ年月が設定されるようにする。
+- **環境変数**: `REDSHIFT_UNLOAD_ROLE`、`EXPORT_BUCKET`、`REDSHIFT_CLUSTER`、`REDSHIFT_DB` を Lambda の環境変数に登録し、コードを環境ごとに分岐させない。実行ロールは Redshift Data API・S3 書き込み権限・KMS 暗号化キー（必要に応じて）の利用権限を付与する。
+- **UNLOAD 設定**: `FORMAT AS PARQUET` に加えて `PARQUETCOMPRESSION ZSTD` を指定し、学習環境でも本番相当のサイズ削減を実現する。フォルダ構成は `processed/yyyymm=<YYYY-MM>/<dataset>/` で統一し、書き出し完了後に `_SUCCESS` ファイルを作成して Athena 等の検証ジョブが idempotent に動作するようにする。
+- **メタデータ出力**: `metadata/data_dictionary.json` を JSON 形式で同一プレフィックスに保存し、生成日時・対象年月・利用可能なデータセットとカラム定義を格納する。docs/10_performance.md の「データ量・性能要件」を参考に、利用者にレコード件数や予想ファイルサイズを伝えたい場合は同 JSON に補足情報を追加する。
+
+### 任意の CSV エクスポート
+
+- **用途**: 研修参加者が Excel などで軽量検証をしたいケースを想定し、Parquet に加えて一部データセット（例: `fact_cost_monthly`）を CSV として出力できるようにする。
+- **フォーマット**: UTF-8（BOM なし）、カンマ区切り、ヘッダ行ありを標準とし、S3 では `processed/yyyymm=<YYYY-MM>/<dataset>/csv/` 配下に配置する。Lambda からの UNLOAD では `FORMAT AS CSV` と `ALLOWOVERWRITE` を指定し、列区切りや NULL 文字列は Redshift のデフォルト値を利用する。
+- **施設コードの扱い**: 学習用途では匿名化せずに原本の施設コードを維持する。今後匿名化が求められた場合に備えて、カラムマスキング処理を別関数化し、Lambda の環境変数で有効化できるようにしておく。
+- **バリデーション**: CSV を出力した場合は、`text/csv` で S3 に保存されているか、ダウンロード後に `nkf --guess` や `file` コマンドで文字コードを確認する。Excel で開いて文字化けしないことも確認ポイントとする。
+
+### QuickSight 連携準備
+
+- **IAM ロール**: QuickSight から Redshift に接続するため、`role-quicksight-dpc` に `AmazonQuickSightAccess` と対象 Redshift の `GetClusterCredentials`、S3 `processed/` バケットへの読み取り権限を付与する。QuickSight 側ではこのロールをデータソース作成時に指定する。
+- **データソース**: QuickSight のデータソースは 2 系統を用意する。1 つ目は Redshift 直接接続で、mart スキーマを参照する。2 つ目は S3 ベースで、`processed/` 配下の Parquet を `manifest.json` 経由でロードできるようにする（現段階では SPICE 取り込みは不要）。
+- **データセット定義**: ダッシュボード作成は後工程とし、今は QuickSight 上でデータセットのスキーマを登録するのみとする。S3 データセットでは `metadata/data_dictionary.json` を参照し、列型を手動で設定する。
+- **アクセス管理**: QuickSight の共有設定やユーザー作成は行わず、管理者アカウントのみが接続確認を実施する。SPICE 容量やダッシュボード公開方針は ELT が安定稼働した後に決定する。
+
+### エクスポート成果物の検証
+
+- **Athena 検証**: S3 `processed/` バケットを対象に Glue テーブルを作成し、Athena で `SELECT COUNT(*)` や `SELECT * LIMIT 10` を実行して mart テーブルの件数・列構成と一致するか確認する。検証クエリの例は運用 Runbook に追記し、初回以降は Athena Workgroup のクエリ履歴を再利用する。
+- **ローカル検証**: 研修環境では `aws s3 cp --recursive` で Parquet を取得し、`pyarrow` あるいは `pandas` を利用して行数・欠損値の有無をチェックする。CSV の場合は `wc -l` で件数を確認し、mart テーブルの件数と突合する。
+- **自動チェック**: 将来的に Step Functions の最後に Athena クエリを実行する Lambda を追加し、エクスポート直後に件数検証を自動化する余地がある。現段階では手動チェックの手順を README に記載し、再現性を確保する。

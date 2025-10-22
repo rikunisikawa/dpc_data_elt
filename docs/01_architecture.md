@@ -13,7 +13,7 @@ DPC データ学習基盤のコンポーネント構成、データフロー、�
 | --- | --- |
 | Amazon S3 (raw/stage/processed/archive) | DPC ファイルの受領、加工中間生成物、エクスポート成果の保管。層別バケットあるいは共通バケット配下のプレフィックスで管理。 |
 | AWS Glue Data Catalog | Redshift 外部テーブル、S3 マニフェスト、QuickSight 連携のためのメタデータリポジトリ。 |
-| Amazon Redshift (RA3, Concurrency Scaling) | DPC データの保存・変換・集計を行う DWH。raw/stage/mart/ref スキーマを配置。 |
+| Amazon Redshift Serverless | DPC データの保存・変換・集計を行う DWH。raw/stage/mart/ref スキーマを配置。RPU を最小限に設定し、自動一時停止でコストを抑制。 |
 | AWS Step Functions + Amazon EventBridge | バッチ ELT のオーケストレーションとスケジューリング。学習向けの定期・オンデマンド実行を制御。 |
 | AWS Lambda (Python) | マニフェスト検証、Redshift Data API 呼出、dbt Runner 起動、エクスポート等の軽量ロジックを実装。 |
 | dbt Cloud / dbt CLI | Redshift 内のデータモデル構築・テスト・ドキュメント生成。 |
@@ -25,29 +25,22 @@ DPC データ学習基盤のコンポーネント構成、データフロー、�
 ## システム構成図
 ```mermaid
 flowchart TB
-  subgraph VPC[Private VPC]
-    subgraph SubnetA[Private Subnet (AZ-a)]
-      rs[(Amazon Redshift RA3 Cluster)]
-      lambdaA[(Lambda Functions)]
-    end
-    subgraph SubnetB[Private Subnet (AZ-b)]
-      lambdaB[(Lambda Functions)]
-    end
-    sf[(AWS Step Functions)]
+  subgraph DefaultVPC[Default VPC (Public Subnets)]
+    rs[(Amazon Redshift Serverless Workgroup)]
   end
-  eb[(Amazon EventBridge Schedule)] --> sf
-  sf --> lambdaA
-  lambdaA -->|Redshift Data API (private link)| rs
-  rs -->|Unload/Export| s3_processed[(S3 processed)]
+  eb[(Amazon EventBridge Schedule)] --> sf[(AWS Step Functions)]
+  sf --> lambda[(AWS Lambda - ノンVPC)]
+  lambda -->|Redshift Data API| rs
+  rs -->|UNLOAD / EXPORT| s3_processed[(S3 processed)]
   s3_raw[(S3 raw)] --> rs
-  s3_raw --> lambdaA
-  lambdaA --> glue[(AWS Glue Catalog)]
+  s3_raw --> lambda
+  lambda --> glue[(AWS Glue Catalog)]
   rs --> qs[(Amazon QuickSight)]
   kms[(AWS KMS)] --> s3_raw
   kms --> rs
   kms --> secrets[(AWS Secrets Manager)]
-  secrets --> lambdaA
-  lambdaA --> sns[(SNS/Slack)]
+  secrets --> lambda
+  lambda --> sns[(SNS/Slack)]
 ```
 
 ## データフロー図
@@ -80,22 +73,22 @@ sequenceDiagram
 ```
 
 ## コンポーネント詳細
-- **S3 raw/stage/processed/archive**: バケット `dpc-learning-data-<env>` を想定。raw で受領、stage で中間成果（オプション）、processed でエクスポート、archive はライフサイクル移動先。
-- **Redshift RA3**: RA3 4XL 以上を想定。Concurrency Scaling を有効化し、dbt 実行時のピーク負荷を吸収。Database 内に `raw`, `stage`, `mart`, `ref`, `dq` スキーマ。
+- **S3 raw/stage/processed/archive**: バケット `dpc-learning-data-<env>` を想定。raw で受領、stage で中間成果（オプション）、processed でエクスポート、archive はライフサイクル移動先。ライフサイクルで Glacier Deep Archive へ移行し保管コストを抑える。
+- **Redshift Serverless**: ワークグループは最小 8 RPU から開始し、学習時のみ自動起動する設定を採用。Database 内に `raw`, `stage`, `mart`, `ref`, `dq` スキーマ。
 - **Step Functions**: 標準ステートマシン。学習では 1 日 1 回スケジュール + 手動実行 API。
-- **Lambda**: Python 3.11 ランタイム。Redshift Data API で SQL 実行、dbt CLI 起動（コンテナイメージ Lambda も可）。VPC 内実行、S3/VPC エンドポイント経由で通信。
+- **Lambda**: Python 3.11 ランタイム。Redshift Data API で SQL 実行、dbt CLI 起動。VPC 外で動作させ、NAT Gateway を不要化。
 - **dbt**: CodeCommit/GitHub からソース取得。Lambda 実行時にコンテナイメージへ組込み、`dbt run --select stage` などを実行。
-- **QuickSight**: 学習オプションとして、mart 層のデータセットを SPICE にインポート。
+- **QuickSight**: 学習オプションとして、mart 層のデータセットを SPICE にインポート。利用しない期間はリーダーを削除し費用抑制。
 
 ## VPC・サブネット配置
 | 項目 | 内容 |
 | --- | --- |
-| VPC CIDR | 10.20.0.0/16 |
-| Private Subnet (AZ-a) | 10.20.1.0/24 – Redshift、Lambda (サブセット) |
-| Private Subnet (AZ-b) | 10.20.2.0/24 – Lambda 冗長配置 |
-| NAT Gateway | 1基 (AZ-a)。dbt 実行でのパッケージ取得等に利用。必要に応じて S3 / Redshift Data API の VPC エンドポイントを利用し、インターネット経路を最小化。 |
-| VPC エンドポイント | S3 Gateway、Secrets Manager、Redshift Data API Interface、CloudWatch Logs Interface |
-| セキュリティグループ | Redshift 用 (Lambda から 5439/TCP)、Lambda 用 (アウトバウンド制限) |
+| VPC | 既定 VPC（10.0.0.0/16）を再利用。追加コストなし。|
+| サブネット | `subnet-public-a` / `subnet-public-c` を Redshift Serverless ワークグループに割当。|
+| ルーティング | インターネットゲートウェイ経由。Redshift Serverless は Data API 経由でアクセスするため、ワークグループに直接のインバウンドは発生しない。|
+| NAT Gateway | なし（Lambda を VPC 外で実行し、dbt 依存パッケージはコンテナイメージ内に同梱）。|
+| VPC エンドポイント | 必須ではないが、コスト抑制のため新規作成しない。将来的に必要になった場合のみ追加検討。|
+| セキュリティグループ | Redshift Serverless 専用 SG を作成し、Data API IAM アクセスのみに限定。|
 
 ## IAM ロール一覧
 | ロール名 | 利用主体 | 付与ポリシー概要 |
@@ -112,20 +105,21 @@ sequenceDiagram
 - **キーポリシー**: セキュリティ管理者をキー管理者、Lambda / Redshift / S3 サービスロールをキーユーザーとして登録。
 
 ## セキュリティ境界
-- すべてのワークロードをプライベートサブネット内で完結させ、Public Subnet・パブリックエンドポイントは使用しない。
-- 外部とのインタフェースは S3 へのファイル投入と SNS/Slack 通知のみ。S3 へのアップロードは既存の SFTP → S3 転送（別アカウント）を想定し、本アカウントでは受領バケットのみ管理する。
-- ネットワークアクセスは必要最小限のセキュリティグループ / NACL で制限。
+- Redshift へのデータアクセスは Data API + IAM 認証のみ許可し、JDBC のパブリックエンドポイントは作成しない。
+- Lambda は VPC 外で実行するため、ネットワーク境界では IAM 条件と Secrets Manager による資格情報管理で制御する。
+- 外部とのインタフェースは S3 へのファイル投入と SNS/Slack 通知のみ。S3 アップロード元は IP 制限付きのバケットポリシーで制御する。
 
 ## 運用ポイント
 - EventBridge で本番・学習環境それぞれスケジュール管理。
 - Step Functions の実行ログを CloudWatch Logs に出力し、障害時のトレースを容易にする。
 - dbt モデル更新は CI/CD パイプライン経由で適用、手動変更は禁止。
-- Redshift ワークロードは WLM で制御し、学習者のアドホッククエリは専用キューに割当てる。
+- Redshift Serverless のワークグループで RPU 上限を設定し、学習者のアドホッククエリは低優先度 IAM ロールで実行させる。
 
 ## 決定事項 / 未決事項
 - **決定事項**
   - DPC データは S3 raw プレフィックス経由で受領し、Step Functions から Lambda → Redshift Data API → dbt の流れで処理する。
-  - すべてのリソースはプライベートサブネット内に配置し、S3/GW エンドポイントと NAT Gateway を併用する。
+  - 学習用として Redshift Serverless を採用し、自動一時停止と最小 RPU 構成でコストを抑える。
+  - Lambda は VPC 外で稼働させ、NAT Gateway や VPC エンドポイントを新規作成しない。
   - KMS カスタマー管理キー `alias/dpc-learning-kms` を S3・Redshift・Secrets Manager で共通利用する。
 - **未決事項**
   - 学習環境における QuickSight 導入範囲（利用部門、SPICE 容量）が未定。

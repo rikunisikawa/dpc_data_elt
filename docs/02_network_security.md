@@ -1,50 +1,47 @@
 # DPC 学習基盤 ネットワーク & セキュリティ設計
 
 ## 目的
-Amazon VPC 内で Redshift と Lambda を中心とする DPC 学習基盤の接続形態、暗号化、権限管理を定義し、セキュリティ要件を満たす。
+学習用途でコストを抑えることを重視しつつ、Redshift Serverless とサーバーレスコンポーネントの接続形態、暗号化、権限境界を定義する。
 
 ## ネットワーク概要
 | 項目 | 設定方針 |
 | --- | --- |
-| VPC CIDR | 10.20.0.0/16 |
-| アベイラビリティゾーン | ap-northeast-1a / 1c |
-| サブネット構成 | Private Subnet (Redshift 用) ×1、Private Subnet (Lambda 用) ×2、共有 Services Subnet ×1 |
-| ルーティング | Private Subnet → NAT Gateway（1a） → Internet Gateway（アウトバウンド最小）、S3 は Gateway エンドポイント経由 |
-| VPC エンドポイント | S3 Gateway、Redshift Data API Interface、Secrets Manager Interface、CloudWatch Logs Interface |
-| DNS | Route 53 Resolver、VPC 内プライベートホストゾーンで Redshift エンドポイント参照 |
+| VPC | 既定 VPC（10.0.0.0/16）を再利用。新規作成・運用コストを発生させない。|
+| アベイラビリティゾーン | ap-northeast-1a / 1c のパブリックサブネットを Redshift Serverless ワークグループに割当。|
+| サブネット構成 | ワークグループ用サブネットのみを指定。Lambda は VPC 外で実行し、追加サブネットを増やさない。|
+| ルーティング | インターネットゲートウェイ経由。Redshift とは Data API 経由で通信するため、VPC 内に受信ルートを開放しない。|
+| VPC エンドポイント | 初期構成では作成しない。必要になった時点で S3 Gateway などを追加検討。|
+| DNS | 既定 VPC の DNS 解決を利用。プライベートホストゾーンは不要。|
 
 ### トポロジ図（文章）
-- **Subnet-Analytics-1a (10.20.1.0/24)**: Redshift メインノード、Step Functions エンドポイント接続。SG で 5439/TCP を Lambda からのみに許可。
-- **Subnet-Lambda-1a (10.20.11.0/24)**、**Subnet-Lambda-1c (10.20.21.0/24)**: Lambda 関数（dbt Runner / Manifest Validator）を配置。アウトバウンドは VPC エンドポイントと NAT Gateway のみに制限。
-- **Subnet-Services-1a (10.20.31.0/24)**: NAT Gateway、Interface エンドポイントを配置。
+- **Default Subnet (ap-northeast-1a)**: Redshift Serverless ワークグループのエンドポイントを割当。セキュリティグループで Data API 以外の接続を拒否。
+- **Default Subnet (ap-northeast-1c)**: 冗長用に指定。ワークロード増加時のみ利用。
+- **Lambda**: VPC 非参加で稼働。Redshift Data API、S3、Secrets Manager などはサービスエンドポイント経由でインターネット越しに TLS 接続する。
 
 ## NAT とエンドポイント
-| コンポーネント | 用途 | 備考 |
-| --- | --- | --- |
-| NAT Gateway | Lambda が外部パッケージを pip install する場合に使用。通常は CI/CD に限定し最小利用。 |
-| S3 Gateway Endpoint | raw/stage/processed/archive バケットへのプライベートアクセス。Route Table にプレフィックスリストを追加。 |
-| Redshift Data API Interface Endpoint | Lambda → Redshift Data API 通信をプライベート化。 |
-| Secrets Manager Interface Endpoint | Lambda/Step Functions からの Secrets 取得。 |
-| CloudWatch Logs Interface Endpoint | Lambda/Step Functions のログ出力。 |
+コスト削減のため初期構成では NAT Gateway や PrivateLink を作成しない。以下の方針で対応する。
+
+| コンポーネント | 方針 |
+| --- | --- |
+| NAT Gateway | 未導入。Lambda コンテナイメージに依存ライブラリを内包し、実行時の外向き通信を避ける。|
+| VPC エンドポイント | 追加費用が発生するため未作成。通信は AWS 管理の TLS エンドポイントを使用。|
+| 将来拡張 | セキュリティ要件が強化された場合にのみ Interface/Gateway エンドポイントを追加。|
 
 ## セキュリティ設定
 ### セキュリティグループ
 | SG 名称 | 適用リソース | 受信 | 送信 |
 | --- | --- | --- | --- |
-| sg-redshift | Redshift RA3 | Lambda SG からの TCP/5439 のみ | すべて許可（デフォルト） |
-| sg-lambda | Lambda Functions | なし | VPC エンドポイント、NAT Gateway のみ（TCP/443） |
-| sg-endpoint | Interface VPC Endpoint | Lambda SG からの TCP/443 | なし |
+| sg-redshift-serverless | Redshift Serverless ワークグループ | 受信ルールは作成しない（Data API のみ利用）。 | 既定で許可 |
 
 ### ネットワーク ACL
-- Private Subnet は既定の許可ルールを使用しつつ、外部アクセス源を自社 IP 範囲に限定。
-- NAT Subnet の入出力を最小限 (80/443) に制限。
+- 既定 VPC の ACL を利用（全許可）。Data API を使用するため、IP 制限は IAM ポリシーとクレデンシャル管理で実施。
 
 ## 暗号化
 | 対象 | 手段 |
 | --- | --- |
 | S3 バケット | SSE-KMS (`alias/dpc-learning-kms`)、バケットポリシーで HTTPS を強制。 |
-| Redshift | クラスター暗号化 (KMS CMK) を有効化。ディスク暗号化 + Snapshots 暗号化。 |
-| Transit | VPC 内通信は TLS を必須（Redshift、S3 Transfer Acceleration は利用しない）。Lambda からの外部通信は `requests` で TLS1.2 以上。 |
+| Redshift | Serverless ワークグループの暗号化を KMS CMK で有効化。スナップショットも自動暗号化。 |
+| Transit | すべての通信は AWS 管理エンドポイントへの TLS1.2 以上。Lambda からの接続は Data API / S3 HTTPS のみ。 |
 | Secrets | Secrets Manager + KMS。Lambda 実行時に環境変数ではなく Secrets を参照。 |
 
 ## IAM ロールとポリシー
@@ -116,26 +113,26 @@ Amazon VPC 内で Redshift と Lambda を中心とする DPC 学習基盤の接�
 }
 ```
 
-必要に応じて、POLICY の `Resource` を最小権限に調整する。
+必要に応じて、POLICY の `Resource` を最小権限に調整する。Data API はリソース ARN が固定ではないため `Resource: "*"` を維持する。
 
 ## 監査ログ設計
 | ログ種別 | 送信先 | 保管期間 |
 | --- | --- | --- |
 | CloudTrail (管理イベント + データイベント S3) | CloudTrail Organization Trail → S3 `logs/cloudtrail/` | 365 日 |
-| Redshift Audit Log | CloudWatch Logs (`/aws/redshift/cluster/dpc-learning`) → S3 Export (月次) | 365 日 |
+| Redshift Serverless 認証ログ | CloudWatch Logs (`/aws/redshift-serverless/workgroup/dpc-learning`) → S3 Export (月次) | 365 日 |
 | Step Functions / Lambda Logs | CloudWatch Logs (`/aws/states/dpc-learning`, `/aws/lambda/dpc-*`) | 180 日 |
 | S3 Access Logs | CloudTrail S3 データイベントで代替。必要に応じて S3 Server Access Log を archive/ 配下に保存。 |
 
 ## TLS 設定
-- Redshift: `require_ssl` パラメータを true。Lambda からは JDBC/psycopg ではなく Redshift Data API (TLS 強制) を使用。
-- QuickSight 接続: SSL/TLS を強制。VPC 接続で PrivateLink。
+- Redshift: Serverless ワークグループは自動で TLS を強制。JDBC 接続を許可する場合も SSL 設定を必須とする。
+- QuickSight 接続: 直接 Redshift Serverless へ接続する場合は SSL/TLS を必須とし、必要であれば SPICE インポートで接続時間を短縮。
 
 ## 決定事項 / 未決事項
 - **決定事項**
-  - Redshift / Lambda は同一 VPC に配置し、すべてプライベートサブネットで構成する。
-  - S3 へのアクセスは Gateway VPC Endpoint を通過し、IAM ポリシーで IP / VPC 条件を付与する。
+  - Redshift は Serverless ワークグループを使用し、既定 VPC のパブリックサブネットに割当てる。
+  - Lambda は VPC 外で稼働し、NAT Gateway や VPC エンドポイントを導入しない。
   - Secrets は Secrets Manager に統一し、環境変数への埋め込みは禁止する。
 - **未決事項**
-  - NAT Gateway を常設するか、CI/CD 実行時のみ有効化するかはコストと運用を踏まえて調整が必要。
-  - Redshift Data API ではなく JDBC 接続を併用する場合のクライアント IP 制御が未検討。
+  - 今後 JDBC 接続が必要になった場合のアクセス経路（VPC Endpoint 追加など）を検討する必要がある。
   - CloudTrail ログの集中管理（組織アカウント）に参加するかどうかをセキュリティチームと協議する必要がある。
+  - Data API を利用するユーザー/ロールの管理フロー（IAM Identity Center 利用可否）の詳細設計が必要。

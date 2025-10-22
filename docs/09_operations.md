@@ -111,6 +111,8 @@ Redshift Serverless を中心とした学習基盤の監視指標、リソース
 
 通知は SNS トピック `arn:aws:sns:ap-northeast-1:<account>:dpc-alerts` 経由。
 
+Terraform では `modules/operations` として CloudWatch ダッシュボード、メトリクスフィルタ、アラーム、SNS サブスクリプションを管理し、Pull Request で `terraform plan` を通過しない限り監視設定が変わらないよう統制する。
+
 ## メンテナンス手順
 ### 自動実行
 - `ANALYZE`：Step Functions バッチ内で `ANALYZE` を実行。

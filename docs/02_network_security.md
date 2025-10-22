@@ -118,7 +118,7 @@
 ## 監査ログ設計
 | ログ種別 | 送信先 | 保管期間 |
 | --- | --- | --- |
-| CloudTrail (管理イベント + データイベント S3) | CloudTrail Organization Trail → S3 `logs/cloudtrail/` | 365 日 |
+| CloudTrail (管理イベント + データイベント S3) | 単一アカウントの Trail を作成し、S3 `logs/cloudtrail/` へ出力 | 365 日 |
 | Redshift Serverless 認証ログ | CloudWatch Logs (`/aws/redshift-serverless/workgroup/dpc-learning`) → S3 Export (月次) | 365 日 |
 | Step Functions / Lambda Logs | CloudWatch Logs (`/aws/states/dpc-learning`, `/aws/lambda/dpc-*`) | 180 日 |
 | S3 Access Logs | CloudTrail S3 データイベントで代替。必要に応じて S3 Server Access Log を archive/ 配下に保存。 |
@@ -132,7 +132,8 @@
   - Redshift は Serverless ワークグループを使用し、既定 VPC のパブリックサブネットに割当てる。
   - Lambda は VPC 外で稼働し、NAT Gateway や VPC エンドポイントを導入しない。
   - Secrets は Secrets Manager に統一し、環境変数への埋め込みは禁止する。
+  - JDBC 接続は利用せず、Redshift への操作は Data API のみとする。
+  - CloudTrail は学習アカウント単独で運用し、組織トレイル連携は行わない。
+  - Data API の利用者は学習者本人に限定し、追加ロール管理フローは構築しない。
 - **未決事項**
-  - 今後 JDBC 接続が必要になった場合のアクセス経路（VPC Endpoint 追加など）を検討する必要がある。
-  - CloudTrail ログの集中管理（組織アカウント）に参加するかどうかをセキュリティチームと協議する必要がある。
-  - Data API を利用するユーザー/ロールの管理フロー（IAM Identity Center 利用可否）の詳細設計が必要。
+  - 追加利用者が参加する場合のアクセス権限拡張手順は将来検討とする。

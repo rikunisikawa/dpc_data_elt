@@ -12,6 +12,7 @@ dbt モデルおよび Redshift DDL の変更を Git ベースで管理し、dev
 - Pull Request には以下のチェックを必須:
   - `dbt run --models state:modified`（dev）
   - `dbt test --models state:modified`
+  - `terraform fmt -check && terraform validate && terraform plan`（foundation/pipeline/operations モジュール）
   - SQLFluff (任意)
 - レビュー承認 2 名以上。
 
@@ -43,9 +44,23 @@ jobs:
       DBT_PROFILES_DIR: .github/profiles
     steps:
       - uses: actions/checkout@v4
+      - name: Terraform setup
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.6
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Terraform fmt & validate
+        run: |
+          terraform -chdir=infra/terraform/dev fmt -check
+          terraform -chdir=infra/terraform/dev validate
+      - name: Terraform plan (no apply)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ap-northeast-1
+        run: terraform -chdir=infra/terraform/dev plan -input=false
       - name: Install dependencies
         run: |
           pip install dbt-redshift==1.7.8 sqlfluff
@@ -132,7 +147,8 @@ jobs:
 1. **dbt モデル**: `git revert` で該当コミットを戻し、`dbt run --models <target>` で再適用。
 2. **DDL**: `scripts/apply_ddl.py --rollback` を使用し、バックアップテーブル（`_bkp`）から `INSERT SELECT` で戻す。
 3. **データ**: S3 `processed/` から直近成功バッチのエクスポートを再ロードし、mart を再構築。
-4. **通知**: Slack で復旧ステータスを共有し、障害報告書に記録。
+4. **Terraform**: `terraform rollback` は存在しないため、`terraform apply` を逆差分で再実行するか、`terraform state` から対象リソースを削除し再適用する。必要に応じて `git revert` で IaC の変更を戻す。
+5. **通知**: Slack で復旧ステータスを共有し、障害報告書に記録。
 
 ## 決定事項 / 未決事項
 - **決定事項**

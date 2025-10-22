@@ -222,6 +222,11 @@ stateDiagram-v2
 }
 ```
 
+## Terraform 実装指針
+- Step Functions、Lambda、ECS、EventBridge、SNS は `modules/pipeline`（docs/01_architecture.md 参照）で一元管理し、Lambda コードは `lambda/` ディレクトリに格納した Zip アーティファクトを `aws_lambda_function` の `filename` に指定する。
+- dbt 実行は `arn:aws:states:::ecs:runTask.sync` タスクとして定義し、ECS タスク定義に Redshift 接続先（Secrets Manager ARN）と実行コマンドを環境変数で渡す。
+- `RollbackStage` の処理有無は Terraform の変数で制御し、学習環境では通知のみの `Pass` ステートを既定とする。
+
 ## Lambda 入力パラメータ
 | 関数 | 入力例 | 主な処理 |
 | --- | --- | --- |

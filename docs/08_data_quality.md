@@ -142,6 +142,37 @@ DELETE FROM dq.results_yyyymm
 -- 各ルール SQL (上記)
 ```
 
+## dbt tests との連携（最小構成）
+- `models/**/schema.yml` で主キーや参照整合性のチェックを `unique`, `not_null`, `accepted_values` などの dbt generic test として宣言する。
+- 各テストには以下のメタ情報を付与し、DQ 結果テーブル登録に必要な属性を埋める。
+  ```yaml
+  tests:
+    - unique:
+        meta:
+          dq_rule_id: PK_DUPLICATE_Y1
+          dq_severity: CRITICAL
+          dq_note: "様式1 主キー重複"
+          dq_facility_column: facility_cd
+          dq_sample_key_columns: [data_id]
+  ```
+- `tools/run_dbt_dq.py` を `dpc-dbt-tests` ECS タスク（もしくは Lambda からの Fargate 実行）で呼び出し、`dbt test --store-failures` を実行する。
+  ```bash
+  python tools/run_dbt_dq.py \
+    --yyyymm 202504 \
+    --project-dir /workspace/dbt \
+    --workgroup-name dpc-rs \
+    --database dpc \
+    --secret-arn arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:dbt-redshift \
+    --slack-webhook-url https://hooks.slack.com/services/T000/B000/XXXX
+  ```
+- スクリプトは `target/run_results.json` と `target/manifest.json` から失敗したテストを抽出し、`dq.results_yyyymm` へ `INSERT` する。`dq_facility_column` が指定されたテストでは `dbt test --store-failures` が作成した失敗テーブルを Redshift Data API で読み出し、施設単位の件数とサンプルキーを集約する。
+- Slack Webhook URL を指定すると重大度別サマリとルール ID を含むメッセージを送信する。Webhook を指定しない場合は格納のみ行う。
+
+### Lambda/ECS 連携メモ
+1. Lambda (`dq_check`) から `dpc-dbt-tests` タスクを起動し、環境変数で `--yyyymm` や Secrets Manager ARN を引き渡す。
+2. ECS タスク内で上記スクリプトを実行し、終了コード 0/1 をハンドリングする。テスト失敗があっても結果は Redshift に記録されるため、Lambda は終了コード 0 を期待する。
+3. Slack 通知を受信したら、学習者自身が最初のエスカレーション先として調査する。`ref.dim_service_code` の更新頻度は未定のため、Slack 通知後に必要に応じて手動で辞書を更新する。
+
 ## しきい値
 | ルール ID | 重大度 | しきい値 | 対応 |
 | --- | --- | --- | --- |
@@ -151,6 +182,8 @@ DELETE FROM dq.results_yyyymm
 | YEN_POINT_FLAG_MISMATCH | WARNING | 5 件以上で通知強調 | 施設に確認、ETL 計算ロジック調査 |
 | SERVICE_CODE_NOT_FOUND | WARNING | 10 件以上 | マスタ更新検討 |
 | ZERO_COST_CASE | WARNING | 施設症例の 2% 超 | 非保険フラグ確認、様式4連携 |
+
+> **TODO**: `ZERO_COST_CASE` の割合算出は現段階では実装していない。将来の拡張で施設別分母を含む検証ロジックを追加する。
 
 ## Slack 通知擬似コード
 ```python

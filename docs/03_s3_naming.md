@@ -100,7 +100,8 @@ s3://dpc-learning-data-<env>/
       "format": "date-time"
     },
     "notes": {
-      "type": "string"
+      "type": "string",
+      "description": "任意の補足メモ。標準化は行わず自由記述とする。"
     }
   }
 }
@@ -145,7 +146,6 @@ Lifecycle ポリシーは S3 バケット設定で構成し、移動後もプレ
   - raw 層は `yyyymm=<YYYY-MM>` のパーティションディレクトリを採用し、file_type ごとにフォルダを分割する。
   - `_manifest.json` の必須項目は `yyyymm`, `file_type`, `facility_cd`, `records`, `hash`, `created_at` とする。
   - raw データは 13 か月で archive へ移動、archive は 5 年後に Glacier Deep Archive へ移行する。
+  - `seq` は 3 桁ゼロ埋め（例: `001`）で採番し、同月・同施設内で一意にする。
 - **未決事項**
-  - ライフサイクル移動後の復元 SLA（応答時間）をどの程度に設定するか検討が必要。
-  - `_manifest.json` の `notes` 項目に含める共通メタ情報（例: 締め処理担当者 ID）の標準化が未確定。
-  - 施設ごとに複数ファイルが存在する場合の `seq` 命名ルール（ゼロパディング桁数）の最終合意が必要。
+  - ライフサイクル移動後の復元 SLA（応答時間）は将来の運用要件に合わせて検討する。

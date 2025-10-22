@@ -15,8 +15,9 @@ DPC データ学習基盤のコンポーネント構成、データフロー、�
 | AWS Glue Data Catalog | Redshift 外部テーブル、S3 マニフェスト、QuickSight 連携のためのメタデータリポジトリ。 |
 | Amazon Redshift Serverless | DPC データの保存・変換・集計を行う DWH。raw/stage/mart/ref スキーマを配置。RPU を最小限に設定し、自動一時停止でコストを抑制。 |
 | AWS Step Functions + Amazon EventBridge | バッチ ELT のオーケストレーションとスケジューリング。学習向けの定期・オンデマンド実行を制御。 |
-| AWS Lambda (Python) | マニフェスト検証、Redshift Data API 呼出、dbt Runner 起動、エクスポート等の軽量ロジックを実装。 |
-| dbt Cloud / dbt CLI | Redshift 内のデータモデル構築・テスト・ドキュメント生成。 |
+| AWS Lambda (Python) | マニフェスト検証、Redshift Data API 呼出、エクスポート等の軽量ロジックを実装。 |
+| AWS Fargate (ECS) | dbt CLI を実行するワークロードをホスト。Step Functions から都度起動し、処理完了後は停止する。 |
+| dbt CLI | Redshift 内のデータモデル構築・テスト・ドキュメント生成。 |
 | Amazon QuickSight (任意) | mart 層に基づく可視化ダッシュボード。学習用途の KPI モニタリングに活用。 |
 | Amazon SNS / Slack Webhook (外部) | 実行結果・障害通知の配信。 |
 | AWS KMS | S3、Redshift、Secrets Manager などの暗号鍵を提供。 |
@@ -46,24 +47,24 @@ flowchart TB
 ## データフロー図
 ```mermaid
 sequenceDiagram
-    participant Source as 外部提出 (SFTP等)
+    participant Source as 学習者 (手動S3アップロード)
     participant S3Raw as S3 raw
     participant StepFn as Step Functions
     participant Lambda as Lambda (Python)
     participant Redshift as Amazon Redshift
-    participant dbt as dbt Runner
+    participant ECS as ECS Fargate (dbt)
     participant S3Proc as S3 processed/export
 
-    Source->>S3Raw: 1. DPCファイル格納 (raw/yyyymm=...)
+    Source->>S3Raw: 1. DPCファイルを手動アップロード (raw/yyyymm=...)
     StepFn-->>EventBridge: スケジュール/手動起動
     StepFn->>Lambda: 2. validate_manifest
     Lambda->>S3Raw: マニフェスト取得
     Lambda->>StepFn: 検証結果 (pass/fail)
     StepFn->>Lambda: 3. COPY(raw) 指示
     Lambda->>Redshift: Redshift Data API 経由 COPY 実行
-    StepFn->>Lambda: 4. dbt run (stage/mart)
-    Lambda->>dbt: dbt deps/run/test 実行
-    dbt->>Redshift: モデル構築
+    StepFn->>ECS: 4. dbt run タスク起動
+    ECS->>Redshift: dbt deps/run/test 実行
+    ECS-->>StepFn: 完了通知 (TaskToken)
     StepFn->>Lambda: 5. DQ チェック
     Lambda->>Redshift: SQL 実行し dq.results_* へ記録
     StepFn->>Lambda: 6. export/parquet
@@ -76,9 +77,20 @@ sequenceDiagram
 - **S3 raw/stage/processed/archive**: バケット `dpc-learning-data-<env>` を想定。raw で受領、stage で中間成果（オプション）、processed でエクスポート、archive はライフサイクル移動先。ライフサイクルで Glacier Deep Archive へ移行し保管コストを抑える。
 - **Redshift Serverless**: ワークグループは最小 8 RPU から開始し、学習時のみ自動起動する設定を採用。Database 内に `raw`, `stage`, `mart`, `ref`, `dq` スキーマ。
 - **Step Functions**: 標準ステートマシン。学習では 1 日 1 回スケジュール + 手動実行 API。
-- **Lambda**: Python 3.11 ランタイム。Redshift Data API で SQL 実行、dbt CLI 起動。VPC 外で動作させ、NAT Gateway を不要化。
-- **dbt**: CodeCommit/GitHub からソース取得。Lambda 実行時にコンテナイメージへ組込み、`dbt run --select stage` などを実行。
-- **QuickSight**: 学習オプションとして、mart 層のデータセットを SPICE にインポート。利用しない期間はリーダーを削除し費用抑制。
+- **Lambda**: Python 3.11 ランタイム。Redshift Data API で SQL 実行、エクスポートや通知を担当する。VPC 外で動作させ、NAT Gateway を不要化。
+- **ECS Fargate (dbt Runner)**: 最小 vCPU/メモリで構成したタスク定義に dbt CLI コンテナイメージを配置。Step Functions から起動し、`dbt deps/run/test` を実行後に停止する。
+- **dbt**: Git リポジトリからソースを取得し、ECS タスク内で実行。成果物は Redshift と S3 ログに出力。
+- **QuickSight**: 学習オプションとして、mart 層のデータセットを SPICE にインポート。ELT の安定稼働後に導入し、利用しない期間はリーダーを削除し費用抑制。
+
+## Infrastructure as Code (Terraform) 方針
+- すべての AWS リソースは Terraform でコード管理し、手動コンソール操作は避ける。ルートモジュールを `infra/terraform/<env>/` に配置し、環境変数ごとにワークスペースまたはディレクトリを分離する。
+- `backend` は S3 + DynamoDB ロックを採用し、`dpc-learning-tfstate` バケットと `terraform-lock` テーブルをタスク01で作成する。
+- モジュール分割の例:
+  - `modules/foundation`: KMS、S3、CloudTrail、Secrets Manager のベースリソース。
+  - `modules/iam`: Lambda・Step Functions・ECS 用 IAM ロールとポリシー。
+  - `modules/redshift`: Serverless ワークグループと Namespace の定義（Data API のみ有効）。
+  - `modules/pipeline`: Lambda、ECR/ECS、Step Functions、EventBridge、SNS を一括デプロイ。
+- CI/CD（docs/11_cicd.md）と連携し、`terraform fmt` / `validate` / `plan` を Pull Request で自動実行する。
 
 ## VPC・サブネット配置
 | 項目 | 内容 |
@@ -117,11 +129,11 @@ sequenceDiagram
 
 ## 決定事項 / 未決事項
 - **決定事項**
-  - DPC データは S3 raw プレフィックス経由で受領し、Step Functions から Lambda → Redshift Data API → dbt の流れで処理する。
+  - DPC データは S3 raw プレフィックス経由で受領し、Step Functions から Lambda・ECS(dbt)・Redshift を連携させて処理する。
   - 学習用として Redshift Serverless を採用し、自動一時停止と最小 RPU 構成でコストを抑える。
   - Lambda は VPC 外で稼働させ、NAT Gateway や VPC エンドポイントを新規作成しない。
   - KMS カスタマー管理キー `alias/dpc-learning-kms` を S3・Redshift・Secrets Manager で共通利用する。
+  - 学習データは学習者が手動で S3 raw プレフィックスへ配置し、外部 SFTP 等との連携は行わない。
+  - dbt モデル実行は Step Functions から起動する ECS Fargate タスク上の dbt CLI で行う。
 - **未決事項**
-  - 学習環境における QuickSight 導入範囲（利用部門、SPICE 容量）が未定。
-  - Lambda の dbt 実行方式（ZIP + Layer vs. コンテナイメージ）の最終決定が必要。
-  - 外部からの DPC ファイル投入方法（SFTP 連携 or 直接 S3）について追加調整が必要。
+  - QuickSight の SPICE 容量最適化と利用部門拡大タイミングは、ELT パイプラインが安定稼働した後に再検討する。

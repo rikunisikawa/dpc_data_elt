@@ -1,403 +1,180 @@
-# テーブル定義書（DPC 学習基盤）
+## 2025年度DPC（退院患者調査）提出データ テーブル定義
 
-本書は DPC データ学習基盤で作成・管理する各スキーマのテーブル定義を整理したものです。物理 DDL（`docs/05_physical_ddl.md`、`ddl/core/*.sql`）の内容をもとに、テーブル目的・主キー・分散/ソートキー・主要カラム仕様を記載します。
+2025年度DPC調査で提出が求められる各種ファイル（様式1、様式3、様式4、入院EF統合ファイル、Dファイル、Hファイル、Kファイル）について、データベース登録を想定したテーブル定義の概要を記載します。データの記録方式は、**タブ区切りテキスト形式**が基本です（Kファイル生成用データはCSV形式）。
 
-## raw スキーマ
+---
 
-### raw.y1_inpatient（様式1 退院患者票）
-- **目的**: 様式1（退院患者調査票）の原本データを保持する。
-- **主キー**: `(facility_cd, data_id)`
-- **DIST/SORT KEY**: `DISTKEY(facility_cd)`, `SORTKEY(facility_cd, data_id)`
+## 1. 様式1（患者属性や病態等の情報）
 
-| カラム名 | 型 | NULL | 説明 |
-| --- | --- | --- | --- |
-| facility_cd | CHAR(9) | NOT NULL | 医療機関コード（施設識別子）。 |
-| data_id | CHAR(10) | NOT NULL | 症例 ID（レコード識別子）。 |
-| admission_date | DATE | NULL | 入院日。 |
-| discharge_date | DATE | NULL | 退院日。 |
-| sex_code | CHAR(1) | NULL | 性別コード。 |
-| birth_date | DATE | NULL | 生年月日。 |
-| age | SMALLINT | NULL | 入院時年齢。 |
-| dpc_code | CHAR(14) | NULL | DPC コード。 |
-| main_icd10 | VARCHAR(10) | NULL | 主傷病 ICD10 コード。 |
-| outcome_code | CHAR(2) | NULL | 転帰コード。 |
-| emergency_flag | CHAR(1) | NULL | 救急搬送フラグ。 |
-| surgery_flag | CHAR(1) | NULL | 手術実施フラグ。 |
-| height_cm | DECIMAL(5,2) | NULL | 身長（cm）。 |
-| weight_kg | DECIMAL(5,2) | NULL | 体重（kg）。 |
-| created_at | TIMESTAMP | NULL | レコード作成日時（ロード時刻）。 |
+様式1は、ヘッダ部とペイロード部で構成されるレコードの組み合わせです [1]。
 
-### raw.y3_facility（様式3 施設情報）
-- **目的**: 様式3で提供される医療機関属性を保持する。
-- **主キー**: `(facility_cd, report_year)`
-- **DIST/SORT KEY**: `DISTSTYLE ALL`, `SORTKEY(facility_cd)`
+### テーブルA-1: 様式1ヘッダ情報（レコード識別キー） [2]
 
-| カラム名 | 型 | NULL | 説明 |
-| --- | --- | --- | --- |
-| facility_cd | CHAR(9) | NOT NULL | 医療機関コード。 |
-| report_year | CHAR(4) | NOT NULL | 報告年度（西暦 YYYY）。 |
-| facility_name | VARCHAR(120) | NULL | 医療機関名称。 |
-| bed_function_code | CHAR(2) | NULL | 病床機能区分コード。 |
-| hospital_group | VARCHAR(40) | NULL | 法人/グループ名称。 |
-| pref_code | CHAR(2) | NULL | 都道府県コード。 |
-| city_code | CHAR(5) | NULL | 市区町村コード。 |
-| created_at | TIMESTAMP | NULL | レコード作成日時。 |
+| 項目名 | 必須/条件 | 桁数 | 概要 |
+| :--- | :--- | :--- | :--- |
+| **施設コード** | 必須 | 9 | 都道府県番号（2桁）＋医療機関コード（7桁）。**前ゼロ必須** [2, 3]。 |
+| **データ識別番号** | 必須 | 10 | 匿名化された患者ID。**前ゼロ必須**。1患者＝1匿名 ID [2-4]。 |
+| **入院年月日** | 必須 | 8 | YYYYMMDD形式。実際の入院日 [2, 5]。 |
+| **回数管理番号** | 必須 | 1 | 同日入退院でない症例は「0」。同日入退院は早い順に「1, 2, 3...」[2, 5]。 |
+| **統括診療情報番号** | 必須 | 1 (文字) | 1入院サマリは「0」。転棟は「1, 2, 3...」。7日以内の再入院集約は「A」または「B」 [2, 6]。 |
 
-### raw.y4_noncovered（様式4 非保険症例）
-- **目的**: 様式4に基づく非保険診療の記録を保持する。
-- **主キー**: `(facility_cd, data_id)`
-- **DIST/SORT KEY**: `DISTKEY(facility_cd)`, `SORTKEY(facility_cd, data_id)`
+### テーブルA-2: 様式1ペイロード詳細情報 [1, 2, 7]
 
-| カラム名 | 型 | NULL | 説明 |
-| --- | --- | --- | --- |
-| facility_cd | CHAR(9) | NOT NULL | 医療機関コード。 |
-| data_id | CHAR(10) | NOT NULL | 症例 ID。 |
-| noncovered_reason | CHAR(2) | NULL | 非保険となった理由コード。 |
-| noncovered_amount | INTEGER | NULL | 非保険点数または金額。 |
-| created_at | TIMESTAMP | NULL | レコード作成日時。 |
+| 項目名 | 必須/条件 | 桁数 (最大) | 概要 |
+| :--- | :--- | :--- | :--- |
+| **レコード識別キー** | 必須 | (複合キー) | テーブルA-1の5項目に連結。 |
+| **コード** | 必須 | 可変 | ペイロード種別を示すコード (例: A000010: 患者属性) [2]。 |
+| **バージョン** | 必須 | 8 | 新設された年度を示すコード (例: 20140401, 20240601) [2, 7]。 |
+| **連番** | 必須 | 1 (文字) | 規定されている場合はレコード順に"1"から、規定外は"0" [2]。 |
+| **ペイロード 1 ～ 9** | 条件有/任意 | 可変長文字列 | コードで規定された内容。情報がない場合は**空欄（Null）**とする [7]。 |
 
-### raw.ef_inpatient（EF 入院明細）
-- **目的**: EF ファイル（入院）による診療明細を保持する。
-- **主キー**: `(facility_cd, data_id, seq_no, detail_no)`
-- **DIST/SORT KEY**: `DISTKEY(facility_cd)`, `SORTKEY(facility_cd, data_id, seq_no)`
+---
 
-| カラム名 | 型 | NULL | 説明 |
-| --- | --- | --- | --- |
-| facility_cd | CHAR(9) | NOT NULL | 医療機関コード。 |
-| data_id | CHAR(10) | NOT NULL | 症例 ID。 |
-| seq_no | INTEGER | NOT NULL | 明細シーケンス番号。 |
-| detail_no | INTEGER | NOT NULL | 明細枝番。 |
-| service_date | DATE | NULL | 診療実施日。 |
-| service_code | VARCHAR(12) | NULL | 診療行為コード。 |
-| unit_code | VARCHAR(3) | NULL | 単位コード。 |
-| qty | DECIMAL(10,3) | NULL | 数量。 |
-| points | INTEGER | NULL | 点数。 |
-| yen_flag | CHAR(1) | NULL | 円換算フラグ。 |
-| doctor_code | VARCHAR(10) | NULL | 担当医コード。 |
-| created_at | TIMESTAMP | NULL | レコード作成日時。 |
+## 2. 様式3（施設情報）
 
-### raw.ef_outpatient（EF 外来明細）
-- **目的**: EF ファイル（外来）の診療明細を保持する。
-- **主キー**: `(facility_cd, data_id, seq_no, detail_no)`
-- **DIST/SORT KEY**: `DISTKEY(facility_cd)`, `SORTKEY(facility_cd, data_id, seq_no)`
+様式3は医療機関単位の情報です [8]。
 
-| カラム名 | 型 | NULL | 説明 |
-| --- | --- | --- | --- |
-| facility_cd | CHAR(9) | NOT NULL | 医療機関コード。 |
-| data_id | CHAR(10) | NOT NULL | 症例 ID。 |
-| seq_no | INTEGER | NOT NULL | 明細シーケンス番号。 |
-| detail_no | INTEGER | NOT NULL | 明細枝番。 |
-| visit_date | DATE | NULL | 来院日。 |
-| service_code | VARCHAR(12) | NULL | 診療行為コード。 |
-| qty | DECIMAL(10,3) | NULL | 数量。 |
-| points | INTEGER | NULL | 点数。 |
-| yen_flag | CHAR(1) | NULL | 円換算フラグ。 |
-| created_at | TIMESTAMP | NULL | レコード作成日時。 |
+### テーブルB: 様式3施設情報 [9, 10]
 
-### raw.d_inclusive（包括評価 D ファイル）
-- **目的**: 包括評価（D ファイル）のセグメント情報を保持する。
-- **主キー**: `(facility_cd, data_id, segment_no)`
-- **DIST/SORT KEY**: `DISTKEY(facility_cd)`, `SORTKEY(facility_cd, data_id)`
+| 項目名 | 必須/条件 | データ型/形式 | 概要 |
+| :--- | :--- | :--- | :--- |
+| **施設コード** | 必須 | 9桁 | 医療機関を特定するコード。 |
+| **調査年月** | 必須 | YYYYMM (6桁) | 調査年月1日時点の情報（自動入力） [9]。 |
+| **施設名** | 必須 | 文字列 | 医療機関の名称 [9]。 |
+| **病院情報URL** | 条件付 | 文字列 | 「病院情報の公表」を公開している場合のURL (DPC対象・準備病院のみ) [9]。 |
+| **開設者コード** | 必須 | 1桁 | 1: 国立, 5: 医療法人, 7: その他の法人など [9]。 |
+| **許可病床数** | 必須 | 数値 | 医療法上の許可病床数（一般、精神、結核、感染症、療養別） [11]。 |
+| **届出病床数** | 必須 | 数値 | 医療保険届出病床の総数、その他、休止、非稼働病床数 [11]。 |
+| **届出入院料** | 必須/条件付 | 数値/コード | 入院料ごとの届出病床数または算定可能かの「○/×」 [12]。 |
+| **看護必要度評価票** | 条件付 | 1桁/文字 | 重症度、医療・看護必要度I/IIの評価状況（1/2/×） [13, 14]。 |
+| **病棟情報（病棟コード設定）** | 必須 | 文字列/コード | 届出入院料、病床機能報告コード、入院EF/Hファイル病棟コードの組合せ [10, 15]。 |
+| **転倒・転落発生件数 (補助票)** | 任意 | 数値 | 調査対象期間中の転倒・転落件数（機能評価係数Ⅱの評価対象） [16, 17]。 |
+| **褥瘡新規発生患者数 (補助票)** | 任意 | 数値 | d2以上の褥瘡新規発生患者数（機能評価係数Ⅱの評価対象） [18, 19]。 |
 
-| カラム名 | 型 | NULL | 説明 |
-| --- | --- | --- | --- |
-| facility_cd | CHAR(9) | NOT NULL | 医療機関コード。 |
-| data_id | CHAR(10) | NOT NULL | 症例 ID。 |
-| segment_no | SMALLINT | NOT NULL | 包括セグメント番号。 |
-| dpc_code | CHAR(14) | NULL | 包括対象の DPC コード。 |
-| start_date | DATE | NULL | セグメント開始日。 |
-| end_date | DATE | NULL | セグメント終了日。 |
-| inclusive_points | INTEGER | NULL | 包括点数。 |
-| adjust_points | INTEGER | NULL | 調整点数。 |
-| reason_code | CHAR(2) | NULL | 調整理由コード。 |
-| created_at | TIMESTAMP | NULL | レコード作成日時。 |
+---
 
-### raw.h_daily（日次重症度 H ファイル）
-- **目的**: H ファイル（日次重症度評価）の原本データを保持する。
-- **主キー**: `(facility_cd, data_id, eval_date, seq_no)`
-- **DIST/SORT KEY**: `DISTKEY(facility_cd)`, `SORTKEY(facility_cd, data_id, eval_date)`
+## 3. 様式4（医科保険診療以外の診療情報）
 
-| カラム名 | 型 | NULL | 説明 |
-| --- | --- | --- | --- |
-| facility_cd | CHAR(9) | NOT NULL | 医療機関コード。 |
-| data_id | CHAR(10) | NOT NULL | 症例 ID。 |
-| eval_date | DATE | NOT NULL | 評価日。 |
-| seq_no | SMALLINT | NOT NULL | 項目シーケンス番号。 |
-| item_code | VARCHAR(6) | NULL | 評価項目コード。 |
-| severity_score | SMALLINT | NULL | 重症度スコア。 |
-| created_at | TIMESTAMP | NULL | レコード作成日時。 |
+全ての退院症例（自費のみも含む）が対象です [8]。
 
-### raw.k_common_id（共通患者 ID）
-- **目的**: 共通患者 ID 紐付け情報を保持する。
-- **主キー**: `(facility_cd, data_id)`
-- **DIST/SORT KEY**: `DISTKEY(facility_cd)`, `SORTKEY(facility_cd, data_id)`
+### テーブルC: 様式4医科保険外情報 [20]
 
-| カラム名 | 型 | NULL | 説明 |
-| --- | --- | --- | --- |
-| facility_cd | CHAR(9) | NOT NULL | 医療機関コード。 |
-| data_id | CHAR(10) | NOT NULL | 症例 ID。 |
-| common_patient_id | VARCHAR(40) | NOT NULL | 共通患者 ID。 |
-| birth_month | DATE | NULL | 生年月（1 日固定）。 |
-| insurer_no | VARCHAR(8) | NULL | 保険者番号。 |
-| subscriber_no | VARCHAR(8) | NULL | 被保険者証番号。 |
-| created_at | TIMESTAMP | NULL | レコード作成日時。 |
+| 項目名 | 必須/条件 | 桁数 | 概要 |
+| :--- | :--- | :--- | :--- |
+| **施設コード** | 必須 | 9 | 都道府県番号＋医療機関コード。 |
+| **データ識別番号** | 必須 | 10 | 様式1と同一の番号。 |
+| **入院年月日** | 必須 | 8 | YYYYMMDD形式。 |
+| **退院年月日** | 必須 | 8 | YYYYMMDD形式。 |
+| **医療保険外との組合せ** | 必須 | 1 | 1: 医科レセプトのみ, 4: 保険と他制度の併用, 5: その他など [21]。 |
 
-## stage スキーマ
+---
 
-### stage.y1_case（様式1 クレンジング）
-- **目的**: 様式1 原本をクレンジングし派生列を付与した症例テーブル。
-- **主キー**: `(facility_cd, data_id)`
-- **DIST/SORT KEY**: `DISTKEY(facility_cd)`, `SORTKEY(facility_cd, data_id)`
+## 4. 入院EF統合ファイル（出来高レセプト情報）
 
-| カラム名 | 型 | NULL | 説明 |
-| --- | --- | --- | --- |
-| facility_cd | CHAR(9) | NOT NULL | 医療機関コード。 |
-| data_id | CHAR(10) | NOT NULL | 症例 ID。 |
-| admission_date | DATE | NULL | 入院日。 |
-| discharge_date | DATE | NULL | 退院日。 |
-| length_of_stay | INTEGER | NULL | 在院日数（退院日-入院日）。 |
-| patient_sex | CHAR(1) | NULL | 性別コード。 |
-| birth_date | DATE | NULL | 生年月日。 |
-| age | SMALLINT | NULL | 入院時年齢。 |
-| dpc_code | CHAR(14) | NULL | DPC コード。 |
-| main_icd10 | VARCHAR(10) | NULL | 主傷病 ICD10。 |
-| surgery_flag | CHAR(1) | NULL | 手術実施フラグ。 |
-| emergency_flag | CHAR(1) | NULL | 救急搬送フラグ。 |
-| outcome_code | CHAR(2) | NULL | 転帰コード。 |
-| insurance_type | VARCHAR(4) | NULL | 保険種別コード。 |
-| created_at | TIMESTAMP | NULL | レコード作成日時。 |
+Eファイル（診療明細情報）とFファイル（行為明細情報）を統合した構造です [22, 23]。
 
-### stage.ef_inpatient_detail（入院明細統合）
-- **目的**: EF 入院明細をマスター突合・集約した派生テーブル。
-- **主キー**: `(facility_cd, data_id, seq_no, detail_no)`
-- **DIST/SORT KEY**: `DISTKEY(facility_cd)`, `SORTKEY(facility_cd, data_id, seq_no)`
-- **外部キー想定**: `(facility_cd, data_id)` → `stage.y1_case`
+### テーブルD: 入院EF統合行為明細情報 [23-25]
 
-| カラム名 | 型 | NULL | 説明 |
-| --- | --- | --- | --- |
-| facility_cd | CHAR(9) | NOT NULL | 医療機関コード。 |
-| data_id | CHAR(10) | NOT NULL | 症例 ID。 |
-| seq_no | INTEGER | NOT NULL | 明細シーケンス番号。 |
-| detail_no | INTEGER | NOT NULL | 明細枝番。 |
-| service_date | DATE | NULL | 診療実施日。 |
-| master_code | VARCHAR(12) | NULL | 統合マスターコード。 |
-| category_code | VARCHAR(4) | NULL | カテゴリコード。 |
-| unit_code | VARCHAR(3) | NULL | 単位コード。 |
-| qty | DECIMAL(12,3) | NULL | 明細数量。 |
-| order_count | DECIMAL(12,3) | NULL | オーダー回数。 |
-| total_qty | DECIMAL(12,3) | NULL | 数量×回数の合計。 |
-| points | INTEGER | NULL | 点数。 |
-| yen_flag | CHAR(1) | NULL | 円換算フラグ。 |
-| points_yen | DECIMAL(12,2) | NULL | 点数換算額（円）。 |
-| created_at | TIMESTAMP | NULL | レコード作成日時。 |
+| 項目名 | 必須/条件 | 桁数 (最大) | 概要 |
+| :--- | :--- | :--- | :--- |
+| **施設コード** | 必須 | 9 | |
+| **データ識別番号** | 必須 | 10 | 様式1と同一の匿名化ID [26]。 |
+| **退院年月日** | 必須 | 8 | 入院継続中は「00000000」 [26]。 |
+| **入院年月日** | 必須 | 8 | YYYYMMDD形式 [26]。 |
+| **データ区分** | 必須 | 2 | 診療識別コード (例: 40: 処置, 50: 手術) [27]。 |
+| **順序番号** | 必須 | 4 | データ区分別に連番。実施日別にレコードを分ける [27]。 |
+| **行為明細番号** | 必須 | 3 | 順序番号内の詳細行為連番 (001-999) [28]。 |
+| **レセプト電算コード** | 必須 | 9 | レセプト電算処理システム用コード [29]。 |
+| **解釈番号** | 必須ではない | 8 | 点数表コード等 (K600等) [29]。 |
+| **診療明細名称** | 必須 | 254 | 診療行為または薬剤/材料の名称 [30]。 |
+| **使用量** | 必須 | 11 | 7桁整数+3桁小数点。出来高実績点数の根拠となる使用量 [31]。 |
+| **基準単位** | 必須 | 3 | 単位コード [31]。 |
+| **明細点数・金額** | 必須 | 12 | Fファイル由来の行為点数/薬剤料/材料料 [24]。 |
+| **円・点区分** | 必須 | 1 | 1: 円単位, 0: 点単位 [30]。 |
+| **出来高実績点数** | 必須 | 8 | 包括や逓減を考慮しない出来高算定点数 [32]。 |
+| **行為明細区分情報** | 必須 | 12 | 12桁の結合情報 (退院時処方区分、入院料包括項目区分など) [33, 34]。 |
+| **行為点数** | 必須 | 8 | Eファイル由来の行為点数計 [24]。 |
+| **行為薬剤料** | 必須 | 8 | Eファイル由来の薬剤点数計 [24]。 |
+| **行為材料料** | 必須 | 8 | Eファイル由来の材料点数計 [24]。 |
+| **行為回数** | 必須 | 3 | 実施回数 [35]。 |
+| **実施年月日** | 必須 | 8 | YYYYMMDD [35]。 |
+| **病棟コード** | 必須 | 10 | 病院独自コード。実施日ごとにセット [31]。 |
+| **入外区分** | 必須 | 1 | 「0: 入院」[32]。 |
 
-### stage.d_inclusive_detail（包括評価集約）
-- **目的**: 包括評価セグメントを集約し派生指標を付与したテーブル。
-- **主キー**: `(facility_cd, data_id, segment_no)`
-- **DIST/SORT KEY**: `DISTKEY(facility_cd)`, `SORTKEY(facility_cd, data_id)`
+---
 
-| カラム名 | 型 | NULL | 説明 |
-| --- | --- | --- | --- |
-| facility_cd | CHAR(9) | NOT NULL | 医療機関コード。 |
-| data_id | CHAR(10) | NOT NULL | 症例 ID。 |
-| segment_no | SMALLINT | NOT NULL | 包括セグメント番号。 |
-| dpc_code | CHAR(14) | NULL | DPC コード。 |
-| inclusive_points | INTEGER | NULL | 包括点数。 |
-| adjust_points | INTEGER | NULL | 調整点数。 |
-| reason_code | CHAR(2) | NULL | 調整理由コード。 |
-| bundle_days | INTEGER | NULL | 包括対象日数。 |
-| created_at | TIMESTAMP | NULL | レコード作成日時。 |
+## 5. Dファイル（包括レセプト情報）
 
-### stage.h_daily_score（日次重症度集約）
-- **目的**: H ファイルの重症度スコアを日次集約し acuity 指標を付与したテーブル。
-- **主キー**: `(facility_cd, data_id, eval_date)`
-- **DIST/SORT KEY**: `DISTKEY(facility_cd)`, `SORTKEY(facility_cd, data_id, eval_date)`
+DPC対象病院のみ作成するファイルで、包括点数や出来高理由コードを記録します [36, 37]。
 
-| カラム名 | 型 | NULL | 説明 |
-| --- | --- | --- | --- |
-| facility_cd | CHAR(9) | NOT NULL | 医療機関コード。 |
-| data_id | CHAR(10) | NOT NULL | 症例 ID。 |
-| eval_date | DATE | NOT NULL | 評価日。 |
-| severity_score | SMALLINT | NULL | 日次重症度スコア。 |
-| acuity_flag | BOOLEAN | NULL | 高重症度フラグ。 |
-| created_at | TIMESTAMP | NULL | レコード作成日時。 |
+### テーブルE: Dファイル包括診療明細情報 [38-40]
 
-### stage.patient_dim_seed（患者ディメンション種表）
-- **目的**: 共通患者 ID を起点とした患者ディメンション候補データを保持する。
-- **主キー**: `(common_patient_id, facility_cd, data_id)`
-- **DIST/SORT KEY**: `DISTKEY(facility_cd)`, `SORTKEY(facility_cd, data_id)`
+| 項目名 | 必須/条件 | 桁数 (最大) | 概要 |
+| :--- | :--- | :--- | :--- |
+| **施設コード** | 必須 | 9 | |
+| **データ識別番号** | 必須 | 10 | |
+| **退院年月日** | 必須 | 8 | 入院継続中は「00000000」 [38]。 |
+| **入院年月日** | 必須 | 8 | |
+| **データ区分** | 必須 | 2 | 01: 出来高理由, 93: 包括点数, 94: 調整点数など [37, 41]。 |
+| **順序番号** | 必須 | 4 | |
+| **レセプト電算コード** | 必須 | 9 | 包括:「930000000」、調整:「940000000」など [41]。 |
+| **解釈番号** | 必須ではない | 8 | 出来高理由コードの場合は「GR0」+「出来高理由コード」 [41, 42]。 |
+| **診療行為名称** | 必須 | 254 | |
+| **行為点数** | 必須 | 8 | DPC包括点数は医療機関別係数乗算前の点数 [43]。 |
+| **円・点区分** | 必須 | 1 | 1: 円単位 (食事のみ), 0: 点単位 [43]。 |
+| **実施年月日** | 必須 | 8 | |
+| **算定開始日** | 包括算定期間のみ必須 | 8 | DPC適用開始日 [44]。 |
+| **算定終了日** | 包括算定期間のみ必須 | 8 | DPC適用終了日 [44]。 |
+| **算定起算日** | 包括算定期間のみ必須 | 8 | DPC算定の起算日 [44]。 |
+| **分類番号** | 条件付 | 14 | 診断群分類番号 (14桁) [44, 45]。 |
+| **医療機関別係数** | 包括算定期間のみ必須 | 6 | (例: 1.1234) [45]。 |
 
-| カラム名 | 型 | NULL | 説明 |
-| --- | --- | --- | --- |
-| common_patient_id | VARCHAR(40) | NOT NULL | 共通患者 ID。 |
-| facility_cd | CHAR(9) | NOT NULL | 医療機関コード。 |
-| data_id | CHAR(10) | NOT NULL | 症例 ID。 |
-| birth_month | DATE | NULL | 生年月（1 日固定）。 |
-| sex_code | CHAR(1) | NULL | 性別コード。 |
-| created_at | TIMESTAMP | NULL | レコード作成日時。 |
+---
 
-## mart スキーマ
+## 6. Hファイル（日ごとの患者情報）
 
-### mart.fact_case_summary（症例サマリファクト）
-- **目的**: 症例単位の主要指標を集約し、分析クエリの中心となるファクトテーブル。
-- **主キー**: `(facility_cd, data_id)`（サロゲートキー `case_sk` あり）
-- **DIST/SORT KEY**: `DISTKEY(facility_cd)`, `SORTKEY(facility_cd, data_id)`
-- **外部キー想定**: `facility_cd` → `ref.dim_facility`、`dpc_code` → `ref.dim_dpc_code`
+重症度、医療・看護必要度の評価対象患者について日ごとに作成されます [36, 46]。
 
-| カラム名 | 型 | NULL | 説明 |
-| --- | --- | --- | --- |
-| case_sk | BIGINT IDENTITY | NOT NULL | サロゲートキー。 |
-| facility_cd | CHAR(9) | NOT NULL | 医療機関コード。 |
-| data_id | CHAR(10) | NOT NULL | 症例 ID。 |
-| common_patient_id | VARCHAR(40) | NULL | 共通患者 ID。 |
-| admission_date | DATE | NULL | 入院日。 |
-| discharge_date | DATE | NULL | 退院日。 |
-| length_of_stay | INTEGER | NULL | 在院日数。 |
-| dpc_code | CHAR(14) | NULL | DPC コード。 |
-| main_icd10 | VARCHAR(10) | NULL | 主傷病 ICD10。 |
-| sex_code | CHAR(1) | NULL | 性別コード。 |
-| age | SMALLINT | NULL | 入院時年齢。 |
-| surgery_flag | CHAR(1) | NULL | 手術フラグ。 |
-| emergency_flag | CHAR(1) | NULL | 救急搬送フラグ。 |
-| outcome_code | CHAR(2) | NULL | 転帰コード。 |
-| total_points | INTEGER | NULL | 請求点数合計。 |
-| inclusive_points | INTEGER | NULL | 包括点数。 |
-| ffs_points | INTEGER | NULL | 出来高（出来高払い）点数。 |
-| noncovered_flag | BOOLEAN | NULL | 非保険診療有無。 |
-| readmit_7d_flag | BOOLEAN | NULL | 7 日以内再入院フラグ。 |
-| readmit_30d_flag | BOOLEAN | NULL | 30 日以内再入院フラグ。 |
-| acuity_avg | DECIMAL(6,3) | NULL | 平均重症度スコア。 |
-| created_at | TIMESTAMP | NULL | レコード作成日時。 |
-| updated_at | TIMESTAMP | NULL | 最終更新日時。 |
+### テーブルF-1: Hファイル日別情報ヘッダ（レコード識別キー） [47, 48]
 
-### mart.fact_cost_monthly（月次コストファクト）
-- **目的**: 施設×年月単位の診療区分別点数を保持する。
-- **主キー**: `(facility_cd, year_month)`
-- **DIST/SORT KEY**: `DISTKEY(facility_cd)`, `SORTKEY(facility_cd, year_month)`
-- **外部キー想定**: `facility_cd` → `ref.dim_facility`
+| 項目名 | 必須/条件 | 桁数 | 概要 |
+| :--- | :--- | :--- | :--- |
+| **施設コード** | 必須 | 9 | |
+| **病棟コード** | 必須 | 10 | 病院独自コード。実施日ごとにセット [47, 49]。 |
+| **データ識別番号** | 必須 | 10 | 様式1と同一の番号 [49]。 |
+| **退院年月日** | 必須 | 8 | 入院継続中は「00000000」 [49]。 |
+| **入院年月日** | 必須 | 8 | |
+| **実施年月日** | 必須 | 8 | 評価を行った年月日 (YYYYMMDD) [48, 49]。 |
 
-| カラム名 | 型 | NULL | 説明 |
-| --- | --- | --- | --- |
-| facility_cd | CHAR(9) | NOT NULL | 医療機関コード。 |
-| year_month | CHAR(6) | NOT NULL | 年月（YYYYMM）。 |
-| inpatient_points | INTEGER | NULL | 入院点数。 |
-| outpatient_points | INTEGER | NULL | 外来点数。 |
-| inclusive_points | INTEGER | NULL | 包括点数。 |
-| drug_points | INTEGER | NULL | 薬剤点数。 |
-| material_points | INTEGER | NULL | 特定保険医療材料点数。 |
-| surgery_points | INTEGER | NULL | 手術点数。 |
-| other_points | INTEGER | NULL | その他点数。 |
-| total_points | INTEGER | NULL | 点数合計。 |
-| created_at | TIMESTAMP | NULL | レコード作成日時。 |
+### テーブルF-2: Hファイル日別ペイロード詳細情報 [48, 50]
 
-### mart.fact_dx_outcome（疾患別アウトカムファクト）
-- **目的**: 施設×年月×DPC コード単位の症例数とアウトカム指標を保持する。
-- **主キー**: `(facility_cd, year_month, dpc_code)`
-- **DIST/SORT KEY**: `DISTKEY(facility_cd)`, `SORTKEY(facility_cd, dpc_code)`
-- **外部キー想定**: `facility_cd` → `ref.dim_facility`、`dpc_code` → `ref.dim_dpc_code`
+| 項目名 | 必須/条件 | 桁数 (最大) | 概要 |
+| :--- | :--- | :--- | :--- |
+| **レコード識別キー** | 必須 | (複合キー) | テーブルF-1の6項目に連結。 |
+| **コード** | 必須 | 可変 | ペイロード種別（例: ASS0013: 一般病棟A項目, TAR0010: 判定対象） [48]。 |
+| **バージョン** | 必須 | 8 | 新設された年度を示すコード [48, 51]。 |
+| **連番** | 必須 | 1 (文字) | 規定外は「0」[48]。 |
+| **ペイロード 1...N** | 条件有 | コード/文字列 | コードで規定された評価項目データ [48]。 |
+| **看護必要度判定対象 (TAR0010 P1)** | 必須 | 1 | 0: 判定対象、1: 短期滞在手術等、2: 15歳未満、3: 産科患者、4: 外泊日、5: 退院日 [50, 52]。 |
 
-| カラム名 | 型 | NULL | 説明 |
-| --- | --- | --- | --- |
-| facility_cd | CHAR(9) | NOT NULL | 医療機関コード。 |
-| year_month | CHAR(6) | NOT NULL | 年月（YYYYMM）。 |
-| dpc_code | CHAR(14) | NOT NULL | DPC コード。 |
-| cases | INTEGER | NULL | 症例数。 |
-| avg_los | DECIMAL(6,2) | NULL | 平均在院日数。 |
-| mortality_rate | DECIMAL(5,2) | NULL | 死亡率（%）。 |
-| readmit_30d_rate | DECIMAL(5,2) | NULL | 30 日以内再入院率（%）。 |
-| avg_acuity | DECIMAL(6,3) | NULL | 平均重症度スコア。 |
-| surgery_ratio | DECIMAL(5,2) | NULL | 手術実施率（%）。 |
-| created_at | TIMESTAMP | NULL | レコード作成日時。 |
+---
 
-## ref スキーマ
+## 7. Kファイル（共通IDに関する情報）
 
-### ref.dim_facility（施設ディメンション）
-- **目的**: 医療機関マスタ情報と変遷（SCD2）を管理するディメンション。
-- **主キー**: `(facility_cd, effective_from)`
-- **DIST/SORT KEY**: `DISTSTYLE ALL`, `SORTKEY(facility_cd)`
+Kファイルは、NDB/介護DBとの連結解析を目的とし、DPCデータ提出支援ツールにより自動作成されます [4, 50, 53, 54]。
 
-| カラム名 | 型 | NULL | 説明 |
-| --- | --- | --- | --- |
-| facility_cd | CHAR(9) | NOT NULL | 医療機関コード。 |
-| facility_name | VARCHAR(120) | NULL | 医療機関名称。 |
-| facility_name_kana | VARCHAR(180) | NULL | 医療機関名称（カナ）。 |
-| bed_function_code | CHAR(2) | NULL | 病床機能区分コード。 |
-| hospital_group | VARCHAR(40) | NULL | 法人/グループ名。 |
-| pref_code | CHAR(2) | NULL | 都道府県コード。 |
-| medical_region | VARCHAR(10) | NULL | 医療圏コード。 |
-| dpc_category | VARCHAR(20) | NULL | DPC カテゴリ区分。 |
-| coefficient_i | DECIMAL(6,4) | NULL | 基礎係数 I。 |
-| coefficient_ii | DECIMAL(6,4) | NULL | 基礎係数 II。 |
-| is_dpc_hospital | BOOLEAN | NULL | DPC 対象病院フラグ。 |
-| effective_from | DATE | NOT NULL | 適用開始日。 |
-| effective_to | DATE | NULL | 適用終了日。 |
-| created_at | TIMESTAMP | NULL | レコード作成日時。 |
+### テーブルG: Kファイル共通ID情報 [54]
 
-### ref.dim_dpc_code（DPC コードディメンション）
-- **目的**: DPC コードと関連情報を保持するディメンション。
-- **主キー**: `(dpc_code)`
-- **DIST/SORT KEY**: `DISTSTYLE ALL`, `SORTKEY(dpc_code)`
-
-| カラム名 | 型 | NULL | 説明 |
-| --- | --- | --- | --- |
-| dpc_code | CHAR(14) | NOT NULL | DPC コード。 |
-| mdc_code | CHAR(2) | NULL | MDC（診断群分類）コード。 |
-| mdc_name | VARCHAR(80) | NULL | MDC 名称。 |
-| diagnosis_name | VARCHAR(160) | NULL | 傷病名。 |
-| surgery_category | VARCHAR(80) | NULL | 手術区分。 |
-| resource_level | VARCHAR(40) | NULL | 資源投入区分。 |
-| created_at | TIMESTAMP | NULL | レコード作成日時。 |
-
-### ref.dim_icd10（ICD10 ディメンション）
-- **目的**: ICD10 コード体系のマスタ情報を保持するディメンション。
-- **主キー**: `(icd10_code)`
-- **DIST/SORT KEY**: `DISTSTYLE ALL`, `SORTKEY(icd10_code)`
-
-| カラム名 | 型 | NULL | 説明 |
-| --- | --- | --- | --- |
-| icd10_code | VARCHAR(10) | NOT NULL | ICD10 コード。 |
-| block_code | VARCHAR(4) | NULL | ブロックコード。 |
-| chapter_code | VARCHAR(2) | NULL | 章コード。 |
-| japanese_name | VARCHAR(255) | NULL | 和名。 |
-| english_name | VARCHAR(255) | NULL | 英名。 |
-| created_at | TIMESTAMP | NULL | レコード作成日時。 |
-
-### ref.dim_date（日付ディメンション）
-- **目的**: 日付に関する派生属性を保持するカレンダーディメンション。
-- **主キー**: `(date_key)`
-- **DIST/SORT KEY**: `DISTSTYLE ALL`, `SORTKEY(date_key)`
-
-| カラム名 | 型 | NULL | 説明 |
-| --- | --- | --- | --- |
-| date_key | DATE | NOT NULL | 日付キー（YYYY-MM-DD）。 |
-| year | SMALLINT | NULL | 年。 |
-| quarter | SMALLINT | NULL | 四半期（1-4）。 |
-| month | SMALLINT | NULL | 月。 |
-| day | SMALLINT | NULL | 日。 |
-| year_month | CHAR(6) | NULL | 年月（YYYYMM）。 |
-| week | SMALLINT | NULL | 週番号。 |
-| weekday | SMALLINT | NULL | 曜日番号（0=日〜）。 |
-| is_holiday | BOOLEAN | NULL | 祝日フラグ。 |
-| created_at | TIMESTAMP | NULL | レコード作成日時。 |
-
-## dq スキーマ
-
-### dq.results_yyyymm（データ品質チェック結果）
-- **目的**: 月次データ品質チェックの結果を保持する。Slack 通知やレポートに利用。
-- **主キー**: `(result_id)`（IDENTITY）
-- **DIST/SORT KEY**: `DISTSTYLE AUTO`, `SORTKEY(yyyymm, rule_id)`
-
-| カラム名 | 型 | NULL | 説明 |
-| --- | --- | --- | --- |
-| result_id | BIGINT IDENTITY | NOT NULL | 結果 ID（サロゲートキー）。 |
-| facility_cd | CHAR(9) | NOT NULL | 医療機関コード。 |
-| yyyymm | CHAR(6) | NOT NULL | 対象年月（YYYYMM）。 |
-| rule_id | VARCHAR(64) | NOT NULL | ルール識別子。 |
-| severity | VARCHAR(10) | NOT NULL | 重大度レベル。 |
-| cnt | INTEGER | NOT NULL | 検知件数。 |
-| sample_keys | VARCHAR(500) | NULL | 代表的なキー例。 |
-| note | VARCHAR(500) | NULL | コメント・補足。 |
-| created_at | TIMESTAMP | NULL | レコード作成日時。 |
-
-## 参照情報
-- 本定義書は `docs/05_physical_ddl.md` と `ddl/core/*.sql` の整備状況に追随させること。変更が生じた場合は本書も更新すること。
+| 項目名 | 必須/条件 | 桁数 (最大) | 概要 |
+| :--- | :--- | :--- | :--- |
+| **施設コード** | 必須 | 9 | |
+| **データ識別番号** | 必須 | 10 | |
+| **入院年月日** | 必須 | 8 | |
+| **退院年月日** | 必須 | 8 | |
+| **実施年月** | 必須 | 6 | Kファイル生成用データより取得 (YYYYMM) [54, 55]。 |
+| **生年月** | 必須 | 6 | 生年月日より YYYYMM の6桁 [54]。 |
+| **一次共通ID** | 必須 | 64 | 生年月日、カナ氏名、性別を基に自動生成されるID [54]。 |
+| **保険者番号** | 必須 | 8 | |
+| **被保険者記号** | 必須 | 38 (バイト) | 英数又は漢字 [56]。 |
+| **被保険者番号** | 必須 | 38 (バイト) | 英数又は漢字 [56]。 |
+| **枝番** | 必須 | 2 | 半角英数字最大 2文字 [56]。 |

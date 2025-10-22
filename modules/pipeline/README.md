@@ -117,9 +117,12 @@ state paths) through Step Functions overrides.
 | ------ | ----------- |
 | `lambda_function_arns` | Map of Lambda function ARNs keyed by logical name. |
 | `sns_topic_arn` | Notification topic ARN for pipeline alerts. |
-| `sns_subscription_arn` | ARN of the Lambda subscription attached to the topic. |
 | `dbt_repository_url` | ECR repository URL for the dbt runner image. |
 | `dbt_task_definition_arn` | ECS task definition ARN for Fargate executions. |
 | `state_machine_arn` | Step Functions state machine ARN. |
 | `event_rule_arn` | EventBridge rule ARN for scheduled executions. |
 | `manual_start_policy_arn` | IAM policy ARN that grants manual start privileges. |
+
+> **Note:** SNS subscriptions and CloudWatch alarms are managed by
+> [`modules/operations`](../operations/README.md) so that alerting
+> configuration lives alongside the broader operations tooling.

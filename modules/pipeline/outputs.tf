@@ -8,11 +8,6 @@ output "sns_topic_arn" {
   value       = aws_sns_topic.pipeline.arn
 }
 
-output "sns_subscription_arn" {
-  description = "ARN of the Lambda subscription attached to the notification topic."
-  value       = aws_sns_topic_subscription.notify.arn
-}
-
 output "dbt_repository_url" {
   description = "URL of the ECR repository that stores the dbt runner image."
   value       = aws_ecr_repository.dbt.repository_url

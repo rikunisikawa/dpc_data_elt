@@ -103,12 +103,6 @@ variable "sns_topic_name" {
   type        = string
 }
 
-variable "sns_subscription_raw_message_delivery" {
-  description = "Whether the Lambda subscription receives raw SNS messages."
-  type        = bool
-  default     = false
-}
-
 variable "state_machine_name" {
   description = "Name assigned to the Step Functions state machine."
   type        = string

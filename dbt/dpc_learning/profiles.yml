@@ -1,0 +1,13 @@
+dpc_learning:
+  target: dev
+  outputs:
+    dev:
+      type: redshift
+      method: data_api
+      workgroup: {{ env_var('DBT_RS_WORKGROUP') }}
+      region: {{ env_var('DBT_RS_REGION') }}
+      database: {{ env_var('DBT_RS_DATABASE') }}
+      schema: stage
+      secret_arn: {{ env_var('DBT_RS_SECRET_ARN') }}
+      threads: 4
+      connect_timeout: 10

@@ -1,0 +1,23 @@
+version: 2
+models:
+  - name: stg_y1_case
+    description: "様式1データを症例単位に整形したステージングモデル"
+    tags: ['layer:stage', 'domain:inpatient']
+    meta:
+      owner: data-eng
+      dq_owner: analytics
+    columns:
+      - name: facility_cd
+        description: "DPC提出施設コード"
+        tests:
+          - not_null
+      - name: data_id
+        description: "症例識別子"
+        tests:
+          - not_null
+          - unique:
+              combination_of_columns: true
+      - name: admission_date
+        description: "入院日"
+        tests:
+          - not_null

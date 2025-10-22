@@ -1,0 +1,29 @@
+version: 2
+models:
+  - name: fact_case_summary
+    description: "症例単位の集計結果ファクト"
+    tags: ['layer:mart', 'domain:inpatient']
+    meta:
+      owner: analytics
+      dq_owner: analytics
+      refresh_frequency: daily
+    columns:
+      - name: facility_cd
+        description: "施設コード"
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_facility')
+              field: facility_cd
+      - name: case_count
+        description: "症例数"
+        tests:
+          - not_null
+      - name: total_points
+        description: "診療点数合計"
+        tests:
+          - not_null
+      - name: readmit_30d_cases
+        description: "30日以内再入院症例数"
+        tests:
+          - not_null

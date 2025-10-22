@@ -1,0 +1,17 @@
+version: 2
+sources:
+  - name: raw
+    database: {{ env_var('DBT_RS_DATABASE') }}
+    schema: raw
+    tables:
+      - name: y1_inpatient
+        description: "様式1レセプトのインポート結果"
+        meta:
+          owner: data-eng
+        columns:
+          - name: facility_cd
+            description: "DPC提出施設コード"
+          - name: data_id
+            description: "症例識別子"
+          - name: admission_date
+            description: "入院日"

@@ -38,6 +38,13 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Allow overwriting an existing _manifest.json",
     )
+    parser.add_argument(
+        "--strict-path",
+        action="store_true",
+        help=(
+            "Treat target directory structure mismatches as errors instead of warnings."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -68,6 +75,29 @@ def compute_hash(data_file: pathlib.Path, algorithm: str) -> str:
     return hash_func.hexdigest()
 
 
+def evaluate_target_structure(
+    target_dir: pathlib.Path, yyyymm: str, file_type: str
+) -> list[str]:
+    """Return warnings if the target directory does not match naming rules."""
+
+    warnings: list[str] = []
+
+    if target_dir.name != file_type:
+        warnings.append(
+            "Target directory name does not match file_type. "
+            f"Expected leaf directory '{file_type}', got '{target_dir.name}'."
+        )
+
+    expected_partition = f"yyyymm={yyyymm[:4]}-{yyyymm[4:]}"
+    if target_dir.parent.name != expected_partition:
+        warnings.append(
+            "Partition directory name does not match yyyymm. "
+            f"Expected '{expected_partition}', got '{target_dir.parent.name}'."
+        )
+
+    return warnings
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
 
@@ -81,6 +111,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     target_dir: pathlib.Path = args.target
     target_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = target_dir / "_manifest.json"
+
+    path_warnings = evaluate_target_structure(target_dir, args.yyyymm, args.file_type)
+    if path_warnings:
+        if args.strict_path:
+            for warning in path_warnings:
+                print(f"Error: {warning}", file=sys.stderr)
+            return 1
+        for warning in path_warnings:
+            print(f"Warning: {warning}", file=sys.stderr)
 
     if manifest_path.exists() and not args.overwrite:
         print(f"Error: {manifest_path} already exists. Use --overwrite to replace it.", file=sys.stderr)
